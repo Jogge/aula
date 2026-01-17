@@ -321,7 +321,7 @@ class AulaCustomConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         # Store existing configuration
         auth_method = self._reauth_entry.data.get(CONF_AUTH_METHOD, AUTH_METHOD_APP)
-        _LOGGER.inf("Aula reauth stored auth_method data was {auth_method}")
+        _LOGGER.info("Aula reauth stored auth_method data was {auth_method}")
         if self._reauth_entry.data.get(CONF_MITID_USE_TOKEN, False) is True:
             auth_method = AUTH_METHOD_TOKEN
 
@@ -372,7 +372,7 @@ class AulaCustomConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
         # Store existing configuration
         auth_method = self._reauth_entry.data.get(CONF_AUTH_METHOD, AUTH_METHOD_APP)
-        _LOGGER.inf("Aula reconfig stored auth_method data was {auth_method}")
+        _LOGGER.info("Aula reconfig stored auth_method data was {auth_method}")
 
         self._mitid_username = self._reauth_entry.data.get(CONF_MITID_USERNAME)
         self._auth_method = auth_method
