@@ -29,8 +29,12 @@ CONF_TEACHER_FULL_NAME = "teacher_full_name"
 # Authentication method constants
 CONF_MITID_USERNAME = "mitid_username"
 CONF_MITID_PASSWORD = "mitid_password"  # Optional, for TOKEN method
+CONF_MITID_TOKEN = "mitid_token"  # Optional, for TOKEN method
 CONF_AUTH_METHOD = "auth_method"
-CONF_MITID_IDENTITY = "mitid_identity"  # Optional, for multiple identity selection (1-based index)
+CONF_MITID_IDENTITY = (
+    "mitid_identity"  # Optional, for multiple identity selection (1-based index)
+)
+CONF_MITID_USE_TOKEN = "mitid_use_token"
 AUTH_METHOD_APP = "APP"
 AUTH_METHOD_TOKEN = "TOKEN"
 

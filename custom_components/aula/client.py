@@ -36,6 +36,7 @@ class Client:
         mitid_username,
         auth_method="APP",
         mitid_password=None,
+        mitid_token=None,
         schoolschedule=True,
         ugeplan=True,
         mu_opgaver=True,
@@ -48,6 +49,7 @@ class Client:
         self._mitid_username = mitid_username
         self._auth_method = auth_method
         self._mitid_password = mitid_password
+        self._mitid_token = mitid_token
         self._mitid_identity = mitid_identity
 
         # Store Home Assistant references for token persistence
@@ -58,6 +60,7 @@ class Client:
         self._aula_client = AulaLoginClient(
             mitid_username=mitid_username,
             mitid_password=mitid_password,
+            mitid_token=mitid_token,
             auth_method=auth_method,
             verbose=False,
             debug=False,
@@ -180,13 +183,16 @@ class Client:
                     # Note: entry.data is only updated during reauth flows (handled in config_flow.py)
                     if self._hass and self._config_entry:
                         from . import async_update_tokens
+
                         try:
                             # Schedule as background task, don't block
                             asyncio.run_coroutine_threadsafe(
-                                async_update_tokens(self._hass, self._config_entry, self._tokens),
-                                self._hass.loop
-                            )
-                            _LOGGER.debug("Token update scheduled to runtime storage")
+                                async_update_tokens(
+                                    self._hass, self._config_entry, self._tokens
+                                ),
+                                self._hass.loop,
+                            ).result(timeout=5)
+                            _LOGGER.debug("Refreshed tokens persisted to config entry")
                         except Exception as e:
                             _LOGGER.warning(f"Failed to schedule token persistence: {e}")
 
@@ -410,18 +416,15 @@ class Client:
                     # This does NOT update entry.data, so no reload is triggered
                     if self._hass and self._config_entry:
                         from . import async_update_tokens
-                        # Use async_create_task instead of blocking run_coroutine_threadsafe
-                        # This prevents blocking the coordinator update
+
                         try:
-                            # Schedule the update as a background task
-                            # We're in a sync context (executor), so we need to schedule it
-                            future = asyncio.run_coroutine_threadsafe(
-                                async_update_tokens(self._hass, self._config_entry, self._tokens),
-                                self._hass.loop
-                            )
-                            # Don't wait for result - let it complete in background
-                            # This prevents blocking the coordinator update
-                            _LOGGER.debug("Token update scheduled to runtime storage (non-blocking)")
+                            asyncio.run_coroutine_threadsafe(
+                                async_update_tokens(
+                                    self._hass, self._config_entry, self._tokens
+                                ),
+                                self._hass.loop,
+                            ).result(timeout=5)
+                            _LOGGER.debug("Refreshed tokens persisted to config entry")
                         except Exception as e:
                             # Log error but don't fail - token refresh succeeded,
                             # persistence failure is non-critical
