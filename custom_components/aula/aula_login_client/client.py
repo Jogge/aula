@@ -73,6 +73,7 @@ class AulaLoginClient:
         self,
         mitid_username: str,
         mitid_password: Optional[str] = None,
+        mitid_token: Optional[str] = None,
         auth_method: str = "APP",
         proxy: Optional[str] = None,
         timeout: int = 30,
@@ -102,6 +103,7 @@ class AulaLoginClient:
         self.session = requests.Session()
         self.mitid_username = mitid_username
         self.mitid_password = mitid_password
+        self.mitid_token = mitid_token
         self.auth_method = auth_method
         self.timeout = timeout
         self.debug = debug
@@ -212,7 +214,9 @@ class AulaLoginClient:
             auth_url = f"{self.auth_base_url}/simplesaml/module.php/oidc/authorize.php"
             full_auth_url = f"{auth_url}?{urllib.parse.urlencode(auth_params)}"
 
-            self.log("Authorization URL generated, now visiting it to start the flow")
+            self.log(
+                "Authorization URL generated, now visiting it to start the flow {full_auth_url}"
+            )
 
             # Actually visit the OAuth authorization URL - this should redirect to SAML
             oauth_response = self.session.get(
@@ -443,17 +447,24 @@ class AulaLoginClient:
                 )
             )
 
-            self.log(f"Available authenticators: {available_authenticators}")
+            self.log(
+                f"Chosen method is {self.auth_method}, Available authenticators: {available_authenticators}"
+            )
 
             if self.auth_method == "TOKEN" and "TOKEN" in available_authenticators:
+                self.log(f"Ok starting token authentication")
                 if not self.mitid_password:
                     self.mitid_password = input(
                         "Please input your MitID password: "
                     ).strip()
-                token_digits = input(
-                    "Please input the 6 digits from your code token: "
-                ).strip()
-                self.mitid_client.authenticate_with_token(token_digits)
+                if not self.mitid_token:
+                    self.mitid_token = input(
+                        "Please input the 6 digits from your code token: "
+                    ).strip()
+                self.log(
+                    f"Starting token authentication with {self.mitid_password} and {self.mitid_token}"
+                )
+                self.mitid_client.authenticate_with_token(self.mitid_token)
                 self.mitid_client.authenticate_with_password(self.mitid_password)
             elif self.auth_method == "APP" and "APP" in available_authenticators:
                 self.mitid_client.authenticate_with_app()
@@ -550,12 +561,12 @@ class AulaLoginClient:
             try:
                 name = soup_input["name"]
             except:
-                continue
-
-            try:
-                data[name] = soup_input["value"]
-            except:
-                data[name] = ""
+                try:
+                    data[soup_input["id"]] = soup_input["value"]
+                except:
+                    self.log(
+                        f"Could not store value for input field {soup_input}", "WARN"
+                    )
 
         # Update SessionStorage values from cookies (they might have changed)
         session_uuid = self.session.cookies.get("SessionUuid", "")
@@ -570,10 +581,6 @@ class AulaLoginClient:
         identity_names = []
         for i, login_option in enumerate(login_options):
             identity_name = login_option.select_one("div.list-link-text").string
-            identity_detail = login_option.select_one("div.link-list-detail").string
-            if identity_detail:
-                identity_name += f" ({identity_detail})"
-            self.log(f"Identity name: {identity_name}", "DEBUG")
             identities.append(i + 1)
             identity_names.append(identity_name)
 
@@ -587,11 +594,13 @@ class AulaLoginClient:
             self.log("You can choose between different identities:", "INFO")
             for i, name in enumerate(identity_names):
                 self.log(f"{i+1}: {name}", "INFO")
-            identity = input("Enter the identity you want to use: ").strip()
+            identity = 1  # input("Enter the identity you want to use: ").strip()
 
         if int(identity) in identities:
             selected_login_option = login_options[int(identity) - 1]
-            data["ChosenOptionJson"] = selected_login_option["data-loginoptions"]
+            selected_link = selected_login_option.a
+            selected_option = selected_link["data-loginoptions"]
+            data["ChosenOptionJson"] = selected_option
         else:
             raise MitIDError("Identity not in list of identities")
 
@@ -657,15 +666,7 @@ class AulaLoginClient:
 
             # Follow redirect chain through broker
             action_url = broker_response.headers["Location"]
-            self.log(f"Broker redirect URL: {action_url}")
-
-            # Try following with allow_redirects=True to see the full chain
-            final_request = self.session.get(
-                action_url, timeout=self.timeout, allow_redirects=True
-            )
-            self.log(f"Final request URL (after redirects): {final_request.url}", "DEBUG")
-            self.log(f"Final request status: {final_request.status_code}", "DEBUG")
-            self.log(f"Final request history: {[r.url for r in final_request.history]}", "DEBUG")
+            final_request = self.session.get(action_url, timeout=self.timeout)
 
             return self._process_broker_response(final_request)
 
@@ -1057,15 +1058,10 @@ class AulaLoginClient:
 
             self.tokens = tokens
 
-            expires_in = tokens.get("expires_in", 0)
-            if expires_in:
-                hours = int(expires_in // 3600)
-                minutes = int((expires_in % 3600) // 60)
-                self.log(
-                    f"Token exchange successful! Token lifetime: {hours}h {minutes}m ({expires_in}s)"
-                )
-            else:
-                self.log("Token exchange successful! (no expiration info)")
+            self.log("Token exchange successful!")
+            self.log(
+                f"Access token expires in: {tokens.get('expires_in', 'Unknown')} seconds"
+            )
 
             return tokens
 
@@ -1273,20 +1269,10 @@ class AulaLoginClient:
                     self.tokens["refresh_token"] = token_response["refresh_token"]
                 if "expires_in" in token_response:
                     self.tokens["expires_in"] = token_response["expires_in"]
-                    # Calculate expires_at timestamp for persistence
-                    self.tokens["expires_at"] = (
-                        time.time() + token_response["expires_in"]
-                    )
 
-                expires_in = token_response.get("expires_in", 0)
-                if expires_in:
-                    hours = int(expires_in // 3600)
-                    minutes = int((expires_in % 3600) // 60)
-                    self.log(
-                        f"Token renewed successfully! New token lifetime: {hours}h {minutes}m ({expires_in}s)"
-                    )
-                else:
-                    self.log("Token renewed successfully!")
+                self.log(
+                    f" Token renewed successfully! Expires in: {token_response.get('expires_in', 'unknown')} seconds"
+                )
                 return True
             else:
                 self.log(

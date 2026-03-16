@@ -20,7 +20,9 @@ from .const import (
     CONF_TEACHER_FULL_NAME,
     CONF_MITID_USERNAME,
     CONF_MITID_PASSWORD,
+    CONF_MITID_TOKEN,
     CONF_AUTH_METHOD,
+    CONF_MITID_USE_TOKEN,
     CONF_MITID_IDENTITY,
     CONF_ACCESS_TOKEN,
     CONF_REFRESH_TOKEN,
@@ -38,9 +40,12 @@ _LOGGER = logging.getLogger(__name__)
 AUTH_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_MITID_USERNAME): cv.string,
-        vol.Optional("schoolschedule", default=True): cv.boolean,
-        vol.Optional("ugeplan", default=True): cv.boolean,
-        vol.Optional("mu_opgaver", default=True): cv.boolean,
+        vol.Optional(CONF_MITID_USE_TOKEN, default=False): cv.boolean,
+        vol.Optional(CONF_MITID_PASSWORD, default=None): cv.string,
+        vol.Optional(CONF_MITID_TOKEN, default=None): cv.string,
+        vol.Optional(CONF_SCHOOLSCHEDULE, default=True): cv.boolean,
+        vol.Optional(CONF_UGEPLAN, default=True): cv.boolean,
+        vol.Optional(CONF_MU_OPGAVER, default=True): cv.boolean,
         vol.Optional("teacher_full_name", default=False): cv.boolean,
     }
 )
@@ -56,6 +61,7 @@ class AulaCustomConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._mitid_username = None
         self._auth_method = None
         self._mitid_password = None
+        self._mitid_token = None
         self._feature_flags = {}
         self._auth_client = None
         self._tokens = None
@@ -67,15 +73,22 @@ class AulaCustomConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: Dict[str, str] = {}
 
         if user_input is not None:
+
+            auth_method = AUTH_METHOD_APP
+            if user_input.get(CONF_MITID_USE_TOKEN, False) is True:
+                auth_method = AUTH_METHOD_TOKEN
+
             # Store configuration
             self._mitid_username = user_input[CONF_MITID_USERNAME]
-            self._auth_method = AUTH_METHOD_APP
-            self._mitid_password = None
+            self._auth_method = auth_method
+            self._mitid_password = user_input.get(CONF_MITID_PASSWORD, None)
+            self._mitid_token = user_input.get(CONF_MITID_TOKEN, None)
             self._feature_flags = {
-                CONF_SCHOOLSCHEDULE: user_input.get("schoolschedule", True),
-                CONF_UGEPLAN: user_input.get("ugeplan", True),
-                CONF_MU_OPGAVER: user_input.get("mu_opgaver", True),
-                CONF_TEACHER_FULL_NAME: user_input.get("teacher_full_name", False),
+                CONF_SCHOOLSCHEDULE: user_input.get(CONF_SCHOOLSCHEDULE, True),
+                CONF_UGEPLAN: user_input.get(CONF_UGEPLAN, True),
+                CONF_MU_OPGAVER: user_input.get(CONF_MU_OPGAVER, True),
+                CONF_MITID_USE_TOKEN: user_input.get(CONF_MITID_USE_TOKEN, False),
+                CONF_TEACHER_FULL_NAME: user_input.get(CONF_TEACHER_FULL_NAME, False),
             }
 
             # Proceed to authentication
@@ -122,6 +135,7 @@ class AulaCustomConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._auth_client = AulaLoginClient(
                 mitid_username=self._mitid_username,
                 mitid_password=self._mitid_password,
+                mitid_token=self._mitid_token,
                 auth_method=self._auth_method,
                 verbose=True,
                 debug=True,
@@ -225,7 +239,11 @@ class AulaCustomConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def _authenticate_async(self, session_data):
         """Background task for authentication."""
         try:
-            _LOGGER.info("Starting MitID authentication for %s", self._mitid_username)
+            _LOGGER.info(
+                "Starting MitID authentication for %s using %s",
+                self._mitid_username,
+                self._auth_client.auth_method,
+            )
 
             # Start monitoring task
             monitor_task = self.hass.async_create_task(
@@ -300,9 +318,16 @@ class AulaCustomConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._reauth_entry = self.hass.config_entries.async_get_entry(
             self.context["entry_id"]
         )
+
         # Store existing configuration
+        auth_method = self._reauth_entry.data.get(CONF_AUTH_METHOD, AUTH_METHOD_APP)
+        _LOGGER.info("Aula reauth stored auth_method data was {auth_method}")
+        if self._reauth_entry.data.get(CONF_MITID_USE_TOKEN, False) is True:
+            auth_method = AUTH_METHOD_TOKEN
+
         self._mitid_username = self._reauth_entry.data.get(CONF_MITID_USERNAME)
-        self._auth_method = AUTH_METHOD_APP
+        # Reauth will require token again
+        self._auth_method = auth_method
         self._mitid_password = None
         self._feature_flags = {
             CONF_SCHOOLSCHEDULE: self._reauth_entry.data.get(CONF_SCHOOLSCHEDULE, True),
@@ -333,6 +358,8 @@ class AulaCustomConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="reauth_confirm",
             description_placeholders={
                 "username": self._mitid_username,
+                "password": None,
+                "token": None,
             },
         )
 
@@ -344,9 +371,13 @@ class AulaCustomConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self.context["entry_id"]
         )
         # Store existing configuration
+        auth_method = self._reauth_entry.data.get(CONF_AUTH_METHOD, AUTH_METHOD_APP)
+        _LOGGER.info("Aula reconfig stored auth_method data was {auth_method}")
+
         self._mitid_username = self._reauth_entry.data.get(CONF_MITID_USERNAME)
-        self._auth_method = AUTH_METHOD_APP
-        self._mitid_password = None
+        self._auth_method = auth_method
+        self._mitid_password = user_input.password
+        self._mitid_token = user_input.token
         self._feature_flags = {
             CONF_SCHOOLSCHEDULE: self._reauth_entry.data.get(CONF_SCHOOLSCHEDULE, True),
             CONF_UGEPLAN: self._reauth_entry.data.get(CONF_UGEPLAN, True),
