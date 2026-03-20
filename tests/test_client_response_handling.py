@@ -146,6 +146,7 @@ class TestHuskelistenResponseHandling:
         assert result[0]["userName"] == "Test User"
 
     def test_empty_list_response(self):
+        """API returns an empty array - should work fine."""
         response = "[]"
         status, result = parse_and_validate_huskelisten_response(response)
         assert status == "ok"
