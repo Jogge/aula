@@ -24,6 +24,14 @@
         "description": "Configure your Aula integration with MitID. You will need to approve the login in your MitID app.",
         "title": "Aula MitID Login"
       },
+      "token_credentials": {
+        "title": "MitID Token Device",
+        "description": "Enter your MitID token device credentials.",
+        "data": {
+          "mitid_password": "MitID Password (for token device)",
+          "mitid_token": "MitID Token (from token device)"
+        }
+      },
       "authenticate": {
         "title": "Authenticating with MitID",
         "description": "Please wait while we authenticate with MitID..."

@@ -30,8 +30,6 @@
         "data": {
           "mitid_username": "MitID Username",
           "mitid_use_token": "Using MitID token device",
-          "mitid_password": "MitID Password (only when using token device)",
-          "mitid_token": "MitID Token (from token device)",
           "schoolschedule": "Enable school schedule calendar",
           "ugeplan": "Enable weekly plans (ugeplaner)",
           "mu_opgaver": "Enable assignments from Min Uddannelse",
@@ -39,6 +37,14 @@
         },
         "description": "Configure your Aula integration with MitID",
         "title": "Aula MitID Login"
+      },
+      "token_credentials": {
+        "title": "MitID Token Device",
+        "description": "Enter your MitID token device credentials.",
+        "data": {
+          "mitid_password": "MitID Password (for token device)",
+          "mitid_token": "MitID Token (from token device)"
+        }
       },
       "reauth_confirm": {
         "title": "Re-authenticate Aula",
