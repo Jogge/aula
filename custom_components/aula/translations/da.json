@@ -30,8 +30,6 @@
         "data": {
           "mitid_username": "MitID Brugernavn",
           "mitid_use_token": "Brug MitID kodeviser",
-          "mitid_password": "MitID Password (til kodeviser)",
-          "mitid_token": "MitID Token (til kodeviser)",
           "schoolschedule": "Aktiver skoleskema kalender",
           "ugeplan": "Aktiver ugeplaner",
           "mu_opgaver": "Aktiver opgaver fra Min Uddannelse",
@@ -39,6 +37,14 @@
         },
         "description": "Konfigurer din Aula integration med MitID",
         "title": "Aula MitID Login"
+      },
+      "token_credentials": {
+        "title": "MitID Kodeviser",
+        "description": "Indtast dine MitID kodeviser oplysninger.",
+        "data": {
+          "mitid_password": "MitID Password (til kodeviser)",
+          "mitid_token": "MitID Token (til kodeviser)"
+        }
       },
       "reauth_confirm": {
         "title": "Genautentificer Aula",

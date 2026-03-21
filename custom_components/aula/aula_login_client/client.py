@@ -560,10 +560,11 @@ class AulaLoginClient:
         for soup_input in soup.form.select("input"):
             try:
                 name = soup_input["name"]
-            except:
+                data[name] = soup_input.get("value", "")
+            except KeyError:
                 try:
-                    data[soup_input["id"]] = soup_input["value"]
-                except:
+                    data[soup_input["id"]] = soup_input.get("value", "")
+                except KeyError:
                     self.log(
                         f"Could not store value for input field {soup_input}", "WARN"
                     )
@@ -598,8 +599,7 @@ class AulaLoginClient:
 
         if int(identity) in identities:
             selected_login_option = login_options[int(identity) - 1]
-            selected_link = selected_login_option.a
-            selected_option = selected_link["data-loginoptions"]
+            selected_option = selected_login_option["data-loginoptions"]
             data["ChosenOptionJson"] = selected_option
         else:
             raise MitIDError("Identity not in list of identities")

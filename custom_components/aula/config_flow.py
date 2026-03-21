@@ -37,16 +37,21 @@ from .views import AulaAuthView, AulaAuthStatusView, AulaAuthSelectIdentityView
 
 _LOGGER = logging.getLogger(__name__)
 
-AUTH_SCHEMA = vol.Schema(
+USER_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_MITID_USERNAME): cv.string,
         vol.Optional(CONF_MITID_USE_TOKEN, default=False): cv.boolean,
-        vol.Optional(CONF_MITID_PASSWORD, default=None): cv.string,
-        vol.Optional(CONF_MITID_TOKEN, default=None): cv.string,
         vol.Optional(CONF_SCHOOLSCHEDULE, default=True): cv.boolean,
         vol.Optional(CONF_UGEPLAN, default=True): cv.boolean,
         vol.Optional(CONF_MU_OPGAVER, default=True): cv.boolean,
-        vol.Optional("teacher_full_name", default=False): cv.boolean,
+        vol.Optional(CONF_TEACHER_FULL_NAME, default=False): cv.boolean,
+    }
+)
+
+TOKEN_CREDENTIALS_SCHEMA = vol.Schema(
+    {
+        vol.Required(CONF_MITID_PASSWORD): cv.string,
+        vol.Required(CONF_MITID_TOKEN): cv.string,
     }
 )
 
@@ -73,29 +78,36 @@ class AulaCustomConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: Dict[str, str] = {}
 
         if user_input is not None:
-
-            auth_method = AUTH_METHOD_APP
-            if user_input.get(CONF_MITID_USE_TOKEN, False) is True:
-                auth_method = AUTH_METHOD_TOKEN
-
-            # Store configuration
+            use_token = user_input.get(CONF_MITID_USE_TOKEN, False)
             self._mitid_username = user_input[CONF_MITID_USERNAME]
-            self._auth_method = auth_method
-            self._mitid_password = user_input.get(CONF_MITID_PASSWORD, None)
-            self._mitid_token = user_input.get(CONF_MITID_TOKEN, None)
+            self._auth_method = AUTH_METHOD_TOKEN if use_token else AUTH_METHOD_APP
             self._feature_flags = {
                 CONF_SCHOOLSCHEDULE: user_input.get(CONF_SCHOOLSCHEDULE, True),
                 CONF_UGEPLAN: user_input.get(CONF_UGEPLAN, True),
                 CONF_MU_OPGAVER: user_input.get(CONF_MU_OPGAVER, True),
-                CONF_MITID_USE_TOKEN: user_input.get(CONF_MITID_USE_TOKEN, False),
+                CONF_MITID_USE_TOKEN: use_token,
                 CONF_TEACHER_FULL_NAME: user_input.get(CONF_TEACHER_FULL_NAME, False),
             }
 
-            # Proceed to authentication
+            if use_token:
+                return await self.async_step_token_credentials()
             return await self.async_step_authenticate()
 
         return self.async_show_form(
-            step_id="user", data_schema=AUTH_SCHEMA, errors=errors
+            step_id="user", data_schema=USER_SCHEMA, errors=errors
+        )
+
+    async def async_step_token_credentials(self, user_input: Optional[Dict[str, Any]] = None):
+        """Handle token device credentials (only shown when use_token is True)."""
+        errors: Dict[str, str] = {}
+
+        if user_input is not None:
+            self._mitid_password = user_input[CONF_MITID_PASSWORD]
+            self._mitid_token = user_input[CONF_MITID_TOKEN]
+            return await self.async_step_authenticate()
+
+        return self.async_show_form(
+            step_id="token_credentials", data_schema=TOKEN_CREDENTIALS_SCHEMA, errors=errors
         )
 
     async def async_step_authenticate(
