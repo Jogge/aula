@@ -1057,6 +1057,21 @@ class Client:
                             data = None
                         # _LOGGER.debug("Meebook ugeplan raw response from week "+week+": "+str(response.text))
 
+                    if isinstance(data, dict) and "message" in data and "expired" in str(data["message"]).lower():
+                        _LOGGER.debug("Meebook token expired, clearing cached token and retrying...")
+                        self.tokens.pop("0004", None)
+                        token = self.get_token("0004")
+                        if token:
+                            headers["authorization"] = token
+                            response = requests.get(
+                                MEEBOOK_API + get_payload, headers=headers, verify=True
+                            )
+                            try:
+                                data = json.loads(response.text, strict=False)
+                            except (json.JSONDecodeError, ValueError):
+                                _LOGGER.warning("Could not parse the response from Meebook as json after token refresh. Response: " + str(response.text[:200]))
+                                data = None
+
                     if not isinstance(data, list):
                         if isinstance(data, dict) and "exceptionMessage" in data:
                             _LOGGER.warning(

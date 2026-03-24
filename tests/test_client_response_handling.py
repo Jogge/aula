@@ -14,12 +14,20 @@ import pytest
 def parse_and_validate_meebook_response(response_text):
     """Simulate the Meebook response parsing logic from client.py.
 
-    Returns a list of person dicts if valid, or None if invalid.
+    Returns a tuple of (status, result) where status is one of:
+    - "ok": valid list response, result is the list
+    - "token_expired": token expired, result is the message
+    - "exception": exceptionMessage dict, result is the message
+    - "unexpected": unexpected type, result is the type name
+    - "error": parse failure, result is None
     """
     try:
         data = json.loads(response_text, strict=False)
     except (json.JSONDecodeError, ValueError):
         data = None
+
+    if isinstance(data, dict) and "message" in data and "expired" in str(data["message"]).lower():
+        return ("token_expired", data["message"])
 
     if not isinstance(data, list):
         if isinstance(data, dict) and "exceptionMessage" in data:
@@ -93,6 +101,27 @@ class TestMeebookResponseHandling:
     def test_dict_without_exception_message(self):
         """API returns a dict without exceptionMessage."""
         response = '{"error": "something went wrong"}'
+        status, type_name = parse_and_validate_meebook_response(response)
+        assert status == "unexpected"
+        assert type_name == "dict"
+
+    def test_jwt_token_expired_response(self):
+        """API returns a dict indicating JWT token expired.
+        This should be detected so the token can be refreshed."""
+        response = '{"message": "JWT-Token expired, please renew."}'
+        status, msg = parse_and_validate_meebook_response(response)
+        assert status == "token_expired"
+        assert "expired" in msg.lower()
+
+    def test_jwt_token_expired_case_insensitive(self):
+        """Token expiry detection should be case-insensitive."""
+        response = '{"message": "JWT-Token Expired, Please Renew."}'
+        status, msg = parse_and_validate_meebook_response(response)
+        assert status == "token_expired"
+
+    def test_dict_with_message_not_expired(self):
+        """API returns a dict with message that is not about expiry."""
+        response = '{"message": "Some other error"}'
         status, type_name = parse_and_validate_meebook_response(response)
         assert status == "unexpected"
         assert type_name == "dict"
