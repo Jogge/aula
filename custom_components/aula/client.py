@@ -141,7 +141,7 @@ class Client:
             res = {"raw_response": response.text}
         return res
 
-    def login(self):
+    def login(self, force_refresh=False):
         """Authenticate with Aula using MitID OAuth 2.0 flow."""
         _LOGGER.info("Starting MitID authentication")
 
@@ -160,8 +160,8 @@ class Client:
                 else:
                     _LOGGER.info(f"Token status: {token_check.get('reason', 'unknown')}")
 
-                # If token looks valid, try to use it
-                if token_check.get("valid", False):
+                # If token looks valid and not forced to refresh, try to use it
+                if token_check.get("valid", False) and not force_refresh:
                     _LOGGER.info("Using valid stored tokens")
                     self._apply_token_to_session(self._tokens["access_token"])
                     try:
@@ -171,7 +171,7 @@ class Client:
                             f"Stored token rejected by API: {e}. Attempting refresh."
                         )
 
-                # If we are here, token is expired or rejected. Try refresh.
+                # If we are here, token is expired, rejected, or force_refresh requested.
                 _LOGGER.info("Attempting to refresh token")
                 if self._aula_client.renew_access_token():
                     # Update local tokens
@@ -1061,7 +1061,7 @@ class Client:
                         _LOGGER.debug("Meebook token expired, refreshing Aula session and retrying...")
                         self.tokens.pop("0004", None)
                         try:
-                            self.login()
+                            self.login(force_refresh=True)
                         except Exception as login_err:
                             _LOGGER.warning(f"Failed to refresh Aula session after Meebook token expiry: {login_err}")
                         token = self.get_token("0004")
