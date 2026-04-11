@@ -141,7 +141,7 @@ class Client:
             res = {"raw_response": response.text}
         return res
 
-    def login(self, force_refresh=False):
+    def login(self):
         """Authenticate with Aula using MitID OAuth 2.0 flow."""
         _LOGGER.info("Starting MitID authentication")
 
@@ -160,8 +160,8 @@ class Client:
                 else:
                     _LOGGER.info(f"Token status: {token_check.get('reason', 'unknown')}")
 
-                # If token looks valid and not forced to refresh, try to use it
-                if token_check.get("valid", False) and not force_refresh:
+                # If token looks valid, try to use it
+                if token_check.get("valid", False):
                     _LOGGER.info("Using valid stored tokens")
                     self._apply_token_to_session(self._tokens["access_token"])
                     try:
@@ -171,7 +171,7 @@ class Client:
                             f"Stored token rejected by API: {e}. Attempting refresh."
                         )
 
-                # If we are here, token is expired, rejected, or force_refresh requested.
+                # If we are here, token is expired or rejected. Try refresh.
                 _LOGGER.info("Attempting to refresh token")
                 if self._aula_client.renew_access_token():
                     # Update local tokens
@@ -1058,13 +1058,8 @@ class Client:
                         # _LOGGER.debug("Meebook ugeplan raw response from week "+week+": "+str(response.text))
 
                     if isinstance(data, dict) and "message" in data and "expired" in str(data["message"]).lower():
-                        _LOGGER.debug("Meebook token expired, resetting session and retrying...")
+                        _LOGGER.debug("Meebook token expired, invalidating cached token and retrying...")
                         self.tokens.pop("0004", None)
-                        self._session = None
-                        try:
-                            self.login(force_refresh=True)
-                        except Exception as login_err:
-                            _LOGGER.warning(f"Failed to refresh Aula session after Meebook token expiry: {login_err}")
                         token = self.get_token("0004")
                         if token:
                             headers["authorization"] = token
