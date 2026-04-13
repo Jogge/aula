@@ -420,12 +420,13 @@ class Client:
                 response = requests.request(method, url, json=post_data, headers=headers, verify=True)
             else:
                 response = requests.get(url, headers=headers, verify=True)
+        except Exception as e:
+            _LOGGER.warning(f"Widget API call to {url} failed: {e}")
+            return None
+        try:
             return json.loads(response.text, strict=False)
         except (json.JSONDecodeError, ValueError):
             _LOGGER.warning(f"Could not parse JSON response from {url}. Response: {response.text[:200]}")
-            return None
-        except Exception as e:
-            _LOGGER.warning(f"Widget API call to {url} failed: {e}")
             return None
 
     def _ensure_valid_token(self):
