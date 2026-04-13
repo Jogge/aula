@@ -1061,7 +1061,10 @@ class Client:
                         _LOGGER.debug("Meebook token expired, resetting session and retrying...")
                         self.tokens.pop("0004", None)
                         self._session = None
-                        self.login()
+                        try:
+                            self.login()
+                        except Exception as login_err:
+                            _LOGGER.warning(f"Failed to re-login after Meebook token expiry: {login_err}")
                         token = self.get_token("0004")
                         if token:
                             headers["authorization"] = token
