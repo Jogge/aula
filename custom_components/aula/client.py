@@ -141,7 +141,7 @@ class Client:
             res = {"raw_response": response.text}
         return res
 
-    def login(self, force_refresh=False):
+    def login(self):
         """Authenticate with Aula using MitID OAuth 2.0 flow."""
         _LOGGER.info("Starting MitID authentication")
 
@@ -160,8 +160,8 @@ class Client:
                 else:
                     _LOGGER.info(f"Token status: {token_check.get('reason', 'unknown')}")
 
-                # If token looks valid and not forced to refresh, try to use it
-                if token_check.get("valid", False) and not force_refresh:
+                # If token looks valid, try to use it
+                if token_check.get("valid", False):
                     _LOGGER.info("Using valid stored tokens")
                     self._apply_token_to_session(self._tokens["access_token"])
                     try:
@@ -171,7 +171,7 @@ class Client:
                             f"Stored token rejected by API: {e}. Attempting refresh."
                         )
 
-                # If we are here, token is expired, rejected, or force_refresh requested.
+                # If we are here, token is expired or rejected. Try refresh.
                 _LOGGER.info("Attempting to refresh token")
                 if self._aula_client.renew_access_token():
                     # Update local tokens
@@ -327,8 +327,8 @@ class Client:
             self.widgets[widgetid] = widgetname
         _LOGGER.info("Widgets found: " + str(self.widgets))
 
-    def get_token(self, widgetid, mock=False):
-        if widgetid in self.tokens:
+    def get_token(self, widgetid, mock=False, force_new=False):
+        if not force_new and widgetid in self.tokens:
             token, timestamp = self.tokens[widgetid]
             current_time = datetime.datetime.now(pytz.utc)
             if current_time - timestamp < datetime.timedelta(minutes=1):
@@ -347,12 +347,86 @@ class Client:
         ).json()
         self._bearertoken = token_response.get("data") if token_response else None
         if not self._bearertoken:
-            _LOGGER.warning(f"Could not get token for widget {widgetid}")
-            return None
+            if force_new:
+                # Token fetch failed after explicit request — try refreshing the
+                # Aula session itself, then retry once.
+                _LOGGER.info(f"Widget token fetch failed for {widgetid}, refreshing Aula session")
+                if self._ensure_valid_token():
+                    token_response = self._session.get(
+                        self.apiurl
+                        + "?method=aulaToken.getAulaToken&widgetId="
+                        + widgetid
+                        + self._get_access_token_param(),
+                        verify=True,
+                    ).json()
+                    self._bearertoken = token_response.get("data") if token_response else None
+            if not self._bearertoken:
+                _LOGGER.warning(f"Could not get token for widget {widgetid}")
+                return None
 
         token = "Bearer " + str(self._bearertoken)
         self.tokens[widgetid] = (token, datetime.datetime.now(pytz.utc))
         return token
+
+    def _widget_api_call(self, widget_id, url, headers, method="GET", post_data=None, auth_header="Authorization"):
+        """Make an API call to a widget endpoint with automatic token-expiry retry.
+
+        Args:
+            widget_id: The Aula widget ID (e.g. "0004", "0062").
+            url: The full URL to call.
+            headers: Dict of HTTP headers. The auth header will be set automatically.
+            method: "GET" or "POST".
+            post_data: JSON-serialisable body for POST requests.
+            auth_header: Name of the header that carries the bearer token
+                         (default "Authorization"; Huskelisten uses "Aula-Authorization").
+
+        Returns:
+            Parsed JSON response (could be list, dict, or None on failure).
+        """
+        token = self.get_token(widget_id)
+        if not token:
+            _LOGGER.warning(f"No token available for widget {widget_id}")
+            return None
+        headers[auth_header] = token
+
+        # --- first attempt ---
+        data = self._do_widget_request(url, headers, method, post_data)
+
+        # --- detect token expiry and retry once ---
+        if self._is_token_expired_response(data):
+            _LOGGER.debug(f"Widget {widget_id} token expired, refreshing and retrying...")
+            self.tokens.pop(widget_id, None)
+            token = self.get_token(widget_id, force_new=True)
+            if token:
+                headers[auth_header] = token
+                data = self._do_widget_request(url, headers, method, post_data)
+
+        return data
+
+    @staticmethod
+    def _is_token_expired_response(data):
+        """Return True if *data* signals an expired upstream token."""
+        if isinstance(data, dict):
+            message = str(data.get("message", ""))
+            if "expired" in message.lower():
+                return True
+        return False
+
+    @staticmethod
+    def _do_widget_request(url, headers, method="GET", post_data=None):
+        """Execute a single HTTP request and return parsed JSON or None."""
+        try:
+            if method.upper() == "POST":
+                response = requests.request(method, url, json=post_data, headers=headers, verify=True)
+            else:
+                response = requests.get(url, headers=headers, verify=True)
+            return json.loads(response.text, strict=False)
+        except (json.JSONDecodeError, ValueError):
+            _LOGGER.warning(f"Could not parse JSON response from {url}. Response: {response.text[:200]}")
+            return None
+        except Exception as e:
+            _LOGGER.warning(f"Widget API call to {url} failed: {e}")
+            return None
 
     def _ensure_valid_token(self):
         """Ensure we have a valid access token, refresh if needed.
@@ -661,9 +735,10 @@ class Client:
             def mu_opgaver(week, thisnext):
                 if "0030" in self.widgets:
                     _LOGGER.debug("In the MU Opgaver flow")
-                    token = self.get_token("0030")
-                    get_payload = (
-                        "/opgaveliste?assuranceLevel=2&childFilter="
+                    mu_headers = {"accept": "application/json"}
+                    mu_url = (
+                        MIN_UDDANNELSE_API
+                        + "/opgaveliste?assuranceLevel=2&childFilter="
                         + childUserIds
                         + "&currentWeekNumber="
                         + week
@@ -671,16 +746,7 @@ class Client:
                         + guardian
                         + "&userProfile=guardian"
                     )
-                    mu_opgaver = requests.get(
-                        MIN_UDDANNELSE_API + get_payload,
-                        headers={"Authorization": token, "accept": "application/json"},
-                        verify=True,
-                    )
-                    _LOGGER.debug(
-                        "MU Opgaver status_code " + str(mu_opgaver.status_code)
-                    )
-                    _LOGGER.debug("MU Opgaver response " + str(mu_opgaver.text))
-                    mu_opgaver_json = mu_opgaver.json()
+                    mu_opgaver_json = self._widget_api_call("0030", mu_url, mu_headers)
                     opgaver_list = mu_opgaver_json.get("opgaver", []) if mu_opgaver_json else []
                     for full_name in self._childnames.items():
                         name_parts = full_name[1].split()
@@ -748,9 +814,10 @@ class Client:
 
             def ugeplan(week, thisnext):
                 if "0029" in self.widgets:
-                    token = self.get_token("0029")
-                    get_payload = (
-                        "/ugebrev?assuranceLevel=2&childFilter="
+                    mu_headers = {"accept": "application/json"}
+                    mu_url = (
+                        MIN_UDDANNELSE_API
+                        + "/ugebrev?assuranceLevel=2&childFilter="
                         + childUserIds
                         + "&currentWeekNumber="
                         + week
@@ -758,15 +825,9 @@ class Client:
                         + guardian
                         + "&userProfile=guardian"
                     )
-                    ugeplaner = requests.get(
-                        MIN_UDDANNELSE_API + get_payload,
-                        headers={"Authorization": token, "accept": "application/json"},
-                        verify=True,
-                    )
-                    # _LOGGER.debug("ugeplaner status_code "+str(ugeplaner.status_code))
-                    # _LOGGER.debug("ugeplaner response "+str(ugeplaner.text))
+                    mu_data = self._widget_api_call("0029", mu_url, mu_headers)
                     try:
-                        for person in ugeplaner.json()["personer"]:
+                        for person in mu_data["personer"]:
                             ugeplan = person["institutioner"][0]["ugebreve"][0][
                                 "indhold"
                             ]
@@ -776,18 +837,16 @@ class Client:
                                 self.ugepnext_attr[person["navn"].split()[0]] = ugeplan
                     except:
                         _LOGGER.debug("Cannot fetch ugeplaner, so setting as empty")
-                        _LOGGER.debug("ugeplaner response " + str(ugeplaner.text))
+                        _LOGGER.debug("ugeplaner response " + str(mu_data))
                 if "0001" in self.widgets:
                     import calendar
 
                     _LOGGER.debug("In the EasyIQ flow")
-                    token = self.get_token("0001")
                     csrf_token = self._get_csrf_token()
 
                     easyiq_headers = {
                         "x-aula-institutionfilter": str(self._institutionProfiles[0]),
                         "x-aula-userprofile": "guardian",
-                        "Authorization": token,
                         "accept": "application/json",
                         "origin": "https://www.aula.dk",
                         "referer": "https://www.aula.dk/",
@@ -809,24 +868,20 @@ class Client:
                             "childFilter": [userid],
                         }
                         _LOGGER.debug("EasyIQ post data " + str(post_data))
-                        ugeplaner = requests.post(
+                        easyiq_data = self._widget_api_call(
+                            "0001",
                             EASYIQ_API + "/weekplaninfo",
-                            json=post_data,
-                            headers=easyiq_headers,
-                            verify=True,
+                            easyiq_headers,
+                            method="POST",
+                            post_data=post_data,
                         )
-                        # _LOGGER.debug(
-                        #    "EasyIQ Opgaver status_code " + str(ugeplaner.status_code)
-                        # )
                         _LOGGER.debug(
-                            "EasyIQ Opgaver response " + str(ugeplaner.json())
+                            "EasyIQ Opgaver response " + str(easyiq_data)
                         )
                         _ugep = (
                             "<h2>"
-                            # + ugeplaner.json()["Weekplan"]["ActivityName"]
                             + " Uge "
                             + week.split("-W")[1]
-                            # + ugeplaner.json()["Weekplan"]["WeekNo"]
                             + "</h2>"
                         )
                         # from datetime import datetime
@@ -856,7 +911,7 @@ class Client:
                                 return False
 
                         try:
-                            for i in ugeplaner.json()["Events"]:
+                            for i in easyiq_data["Events"]:
                                 if is_correct_format(i["start"], "%Y/%m/%d %H:%M"):
                                     _LOGGER.debug("No Event")
                                     start_datetime = datetime.datetime.strptime(
@@ -912,12 +967,10 @@ class Client:
 
                 if "0062" in self.widgets:
                     _LOGGER.debug("In the Huskelisten flow...")
-                    token = self.get_token("0062", False)
                     huskelisten_headers = {
                         "Accept": "application/json, text/plain, */*",
                         "Accept-Encoding": "gzip, deflate, br",
                         "Accept-Language": "en-US,en;q=0.9,da;q=0.8",
-                        "Aula-Authorization": token,
                         "Origin": "https://www.aula.dk",
                         "Referer": "https://www.aula.dk/",
                         "Sec-Fetch-Dest": "empty",
@@ -932,8 +985,9 @@ class Client:
                     timedelta = datetime.datetime.now() + datetime.timedelta(days=7)
                     From = datetime.datetime.now().strftime("%Y-%m-%d")
                     dueNoLaterThan = timedelta.strftime("%Y-%m-%d")
-                    get_payload = (
-                        "/reminders/v1?children="
+                    huskelisten_url = (
+                        SYSTEMATIC_API
+                        + "/reminders/v1?children="
                         + children
                         + "&from="
                         + From
@@ -945,29 +999,13 @@ class Client:
                         + institutions
                     )
                     _LOGGER.debug(
-                        "Huskelisten get_payload: " + SYSTEMATIC_API + get_payload
+                        "Huskelisten url: " + huskelisten_url
                     )
-                    #
-                    mock_huskelisten = 0
-                    #
-                    if mock_huskelisten == 1:
-                        _LOGGER.warning("Using mock data for Huskelisten.")
-                        mock_huskelisten = '[{"userName":"Emilie efternavn","userId":164625,"courseReminders":[],"assignmentReminders":[],"teamReminders":[{"id":76169,"institutionName":"Holme Skole","institutionId":183,"dueDate":"2022-11-29T23:00:00Z","teamId":65240,"teamName":"2A","reminderText":"Onsdagslektie: Matematikfessor.dk: Sænk skibet med plus.","createdBy":"Peter ","lastEditBy":"Peter ","subjectName":"Matematik"},{"id":76598,"institutionName":"Holme Skole","institutionId":183,"dueDate":"2022-12-06T23:00:00Z","teamId":65240,"teamName":"2A","reminderText":"Julekalender på Skoledu.dk: I skal forsøge at løse dagens kalenderopgave. opgaven kan også godt løses dagen efter.","createdBy":"Peter ","lastEditBy":"Peter Riis","subjectName":"Matematik"},{"id":76599,"institutionName":"Holme Skole","institutionId":183,"dueDate":"2022-12-13T23:00:00Z","teamId":65240,"teamName":"2A","reminderText":"Julekalender på Skoledu.dk: I skal forsøge at løse dagens kalenderopgave. opgaven kan også godt løses dagen efter.","createdBy":"Peter ","lastEditBy":"Peter ","subjectName":"Matematik"},{"id":76600,"institutionName":"Holme Skole","institutionId":183,"dueDate":"2022-12-20T23:00:00Z","teamId":65240,"teamName":"2A","reminderText":"Julekalender på Skoledu.dk: I skal forsøge at løse dagens kalenderopgave. opgaven kan også godt løses dagen efter.","createdBy":"Peter Riis","lastEditBy":"Peter Riis","subjectName":"Matematik"}]},{"userName":"Karla","userId":77882,"courseReminders":[],"assignmentReminders":[{"id":0,"institutionName":"Holme Skole","institutionId":183,"dueDate":"2022-12-08T11:00:00Z","courseId":297469,"teamNames":["5A","5B"],"teamIds":[65271,65258],"courseSubjects":[],"assignmentId":5027904,"assignmentText":"Skriv en novelle"}],"teamReminders":[{"id":76367,"institutionName":"Holme Skole","institutionId":183,"dueDate":"2022-11-30T23:00:00Z","teamId":65258,"teamName":"5A","reminderText":"Læse resten af kap.1 fra Ternet Ninja ( kopiark) Læs det hele højt eller vælg et afsnit. ","createdBy":"Christina ","lastEditBy":"Christina ","subjectName":"Dansk"}]},{"userName":"Vega  ","userId":206597,"courseReminders":[],"assignmentReminders":[],"teamReminders":[]}]'
-                        data = json.loads(mock_huskelisten, strict=False)
-                    else:
-                        response = requests.get(
-                            SYSTEMATIC_API + get_payload,
-                            headers=huskelisten_headers,
-                            verify=True,
-                        )
-                        try:
-                            data = json.loads(response.text, strict=False)
-                        except (json.JSONDecodeError, ValueError):
-                            _LOGGER.error(
-                                "Could not parse the response from Huskelisten as json."
-                            )
-                            data = None
-                        # _LOGGER.debug("Huskelisten raw response: "+str(response.text))
+
+                    data = self._widget_api_call(
+                        "0062", huskelisten_url, huskelisten_headers,
+                        auth_header="Aula-Authorization",
+                    )
 
                     if not isinstance(data, list):
                         if data is not None:
@@ -1015,12 +1053,9 @@ class Client:
                 if "0004" in self.widgets:
                     # Try Meebook:
                     _LOGGER.debug("In the Meebook flow...")
-                    token = self.get_token("0004")
-                    # _LOGGER.debug("Token "+token)
-                    headers = {
+                    meebook_headers = {
                         "authority": "app.meebook.com",
                         "accept": "application/json",
-                        "authorization": token,
                         "dnt": "1",
                         "origin": "https://www.aula.dk",
                         "referer": "https://www.aula.dk/",
@@ -1032,8 +1067,9 @@ class Client:
                     institutionFilter = "&institutionFilter[]=".join(
                         self._institutionProfiles
                     )
-                    get_payload = (
-                        "/relatedweekplan/all?currentWeekNumber="
+                    meebook_url = (
+                        MEEBOOK_API
+                        + "/relatedweekplan/all?currentWeekNumber="
                         + week
                         + "&userProfile=guardian&childFilter[]="
                         + childFilter
@@ -1041,41 +1077,10 @@ class Client:
                         + institutionFilter
                     )
 
-                    mock_meebook = 0
-                    if mock_meebook == 1:
-                        _LOGGER.warning("Using mock data for Meebook ugeplaner.")
-                        mock_meebook = '[{"id":490000,"name":"Emilie efternavn","unilogin":"lud...","weekPlan":[{"date":"mandag 28. nov.","tasks":[{"id":3069630,"type":"comment","author":"Met...","group":"3.a - ugeplan","pill":"Ingen fag tilknyttet","content":"I denne uge er der omlagt uge p\u00e5 hele skolen.\n\nMandag har vi \nKlippeklistredag:\n\nMan m\u00e5 gerne have nissehuer p\u00e5 :)\n\nMedbring gerne en god saks, limstift, skabeloner mm. \n\nB\u00f8rnene skal ogs\u00e5 medbringe et vasket syltet\u00f8jsglas eller lign., som vi skal male p\u00e5. S\u00f8rg gerne for at der ikke er m\u00e6rker p\u00e5:-)\n\n1. lektion: Morgenb\u00e5nd med l\u00e6sning/opgaver\n\n2. lektion: \nVi laver f\u00e6lles julenisser efter en bestemt skabelon.\n\n3. - 5. lektion: \nVi julehygger med musik og kreative projekter. Vi pynter vores f\u00e6lles juletr\u00e6, og synger julesange. \n\n6. lektion:\nAfslutning og oprydning.","editUrl":"https://app.meebook.com//arsplaner/dlap//956783//202248"}]},{"date":"tirsdag 29. nov.","tasks":[{"id":3069630,"type":"comment","author":"Met...","group":"3.a - ugeplan","pill":"Ingen fag tilknyttet","content":"Omlagt uge:\n\n1. lektion\nMorgenb\u00e5nd med l\u00e6sning og opgaver.\n\n2. lektion\nVi starter p\u00e5 storylineforl\u00f8b om jul. Vi taler om nisser og danner nissefamilier i klassen.\n\n3.-5. lektion\nVi lave et juleprojekt med filt...\n\n6. lektion\nVi arbejder med en kreativ opgave om v\u00e5benskold.","editUrl":"https://app.meebook.com//arsplaner/dlap//956783//202248"}]},{"date":"onsdag 30. nov.","tasks":[{"id":3069630,"type":"comment","author":"Met...","group":"3.a - ugeplan","pill":"Ingen fag tilknyttet","content":"Omlagt uge:\n\n1. -2. lektion\nVi skal til foredrag med SOS B\u00f8rnebyerne om omvendt julekalender.\n\n3-4. lektion\nVi skriver nissehistorier om nissefamilierne.\n\n5.-6. lektion\nVi laver jule-postel\u00f8b, hvor posterne skal l\u00e6ses med en kodel\u00e6ser.","editUrl":"https://app.meebook.com//arsplaner/dlap//956783//202248"}]},{"date":"torsdag 1. dec.","tasks":[{"id":3069630,"type":"comment","author":"Met...","group":"3.a - ugeplan","pill":"Ingen fag tilknyttet","content":"Omlagt uge:\n\n1. lektion\nMorgenb\u00e5nd med l\u00e6sning og opgaver. \nVi arbejder med l\u00e6s og forst\u00e5 i en julehistorie.\n\n2.-5. lektion\nVi skal arbejde med et kreativt juleprojekt, hvor der laves huse til nisserne.\n\n6. lektion\nSe SOS b\u00f8rnebyernes julekalender og afrunding af dagen.","editUrl":"https://app.meebook.com//arsplaner/dlap//956783//202248"}]},{"date":"fredag 2. dec.","tasks":[{"id":3069630,"type":"comment","author":"Met...","group":"3.a - ugeplan","pill":"Ingen fag tilknyttet","content":"1. lektion\nMorgenb\u00e5nd med l\u00e6sning og opgaver samt julehygge, hvor vi l\u00e6ser julehistorie \n\n2. lektion:\nVi skal lave et julerim og skrive det ind p\u00e5 en flot julenisse samt tegne nissen. \n\n3.-4. lektion\nVi skal lave jule-postel\u00f8b p\u00e5 skolen. \n\n5.. lektion\nVi skal l\u00f8se et hemmeligt kodebrev ved hj\u00e6lp af en kodel\u00e6ser. \n\nVi evaluerer og afrunder ugen.","editUrl":"https://app.meebook.com//arsplaner/dlap//956783//202248"}]}]},{"id":630000,"name":"Ann...","unilogin":"ann...","weekPlan":[{"date":"mandag 28. nov.","tasks":[{"id":3090189,"type":"comment","author":"May...","group":"0C (22/23)","pill":"B\u00f8rnehaveklasse, B\u00f8rnehaveklassen, Dansk, Matematik","content":"I dag skal vi h\u00f8re om jul i Norge og lave Norsk julepynt.\nEfter 12 pausen skal vi h\u00f8re om julen i Danmark f\u00f8r juletr\u00e6et og andestegen.\nVi skal farvel\u00e6gge g\u00e5rdnisserne der passede p\u00e5 g\u00e5rdene i gamle dage.","editUrl":"https://app.meebook.com//arsplaner/dlap//899210//202248"}]},{"date":"tirsdag 29. nov.","tasks":[{"id":3090189,"type":"comment","author":"May...","group":"0C (22/23)","pill":"B\u00f8rnehaveklasse, B\u00f8rnehaveklassen, Dansk, Matematik","content":"I dag skal vi arbejde med julen i Gr\u00f8nland og lave gr\u00f8nlandske julehuse.\nEfter 12 pausen skal vi h\u00f8re om JUletr\u00e6et der flytter ind i de danske stuer. Vi skal tale om hvor det stammer fra og hvad der var p\u00e5 juletr\u00e6et i gamle dage . Blandt andet den spiselige pynt.\nVi taler om Peters jul og at der ikke altid har v\u00e6ret en stjerne i toppen. Vi klipper storke til juletr\u00e6stoppen","editUrl":"https://app.meebook.com//arsplaner/dlap//899210//202248"}]},{"date":"onsdag 30. nov.","tasks":[{"id":3090189,"type":"comment","author":"May...","group":"0C (22/23)","pill":"B\u00f8rnehaveklasse, B\u00f8rnehaveklassen, Dansk, Matematik","content":"I dag st\u00e5r den p\u00e5 Jul i Finland og finske juletraditioner. Vi klipper finske julestjerner.\nEfter pausen skal vi arbejde videre med jul og julepynt gennem tiden i dk. \nVi skal tale om hvorfor der er flag, trompeter og trommer p\u00e5 tr\u00e6et (krigen i 1864) og vi skal lave gammeldags silkeroser og musetrapper til tr\u00e6et","editUrl":"https://app.meebook.com//arsplaner/dlap//899210//202248"}]},{"date":"torsdag 1. dec.","tasks":[{"id":3090189,"type":"comment","author":"May...","group":"0C (22/23)","pill":"B\u00f8rnehaveklasse, B\u00f8rnehaveklassen, Dansk, Matematik","content":"I dag skal vi p\u00e5 en juletur med hygge og posl\u00f8b til trylleskoven \nBussen k\u00f8rer os derud kl 10 og vi er senest tilbage n\u00e5r skoledagen slutter .\nHusk at f\u00e5 varmt praktisk t\u00f8j p\u00e5 og en turtaske med en let tilg\u00e6ngelig madpakke der kan spises i det fri. Regnbukser eller overtr\u00e6ksbukser s\u00e5 man kan sidde p\u00e5 jorden.","editUrl":"https://app.meebook.com//arsplaner/dlap//899210//202248"}]},{"date":"fredag 2. dec.","tasks":[{"id":3090189,"type":"comment","author":"May...","group":"0C (22/23)","pill":"B\u00f8rnehaveklasse, B\u00f8rnehaveklassen, Dansk, Matematik","content":"Klippe/ klistre dag .\nHusk at tage lim, saks og kaffe m.m., kop og tallerkner med hjemmefra. Hvis i tager kage med er det til en buffet i klassen.","editUrl":"https://app.meebook.com//arsplaner/dlap//899210//202248"}]}]}]'
-                        data = json.loads(mock_meebook, strict=False)
-                    else:
-                        response = requests.get(
-                            MEEBOOK_API + get_payload, headers=headers, verify=True
-                        )
-                        try:
-                            data = json.loads(response.text, strict=False)
-                        except (json.JSONDecodeError, ValueError):
-                            _LOGGER.warning("Could not parse the response from Meebook as json. Response: " + str(response.text[:200]))
-                            data = None
-                        # _LOGGER.debug("Meebook ugeplan raw response from week "+week+": "+str(response.text))
-
-                    if isinstance(data, dict) and "message" in data and "expired" in str(data["message"]).lower():
-                        _LOGGER.debug("Meebook token expired, resetting session and retrying...")
-                        self.tokens.pop("0004", None)
-                        self._session = None
-                        try:
-                            self.login(force_refresh=True)
-                        except Exception as login_err:
-                            _LOGGER.warning(f"Failed to refresh Aula session after Meebook token expiry: {login_err}")
-                        token = self.get_token("0004")
-                        if token:
-                            headers["authorization"] = token
-                            response = requests.get(
-                                MEEBOOK_API + get_payload, headers=headers, verify=True
-                            )
-                            try:
-                                data = json.loads(response.text, strict=False)
-                            except (json.JSONDecodeError, ValueError):
-                                _LOGGER.warning("Could not parse the response from Meebook as json after token refresh. Response: " + str(response.text[:200]))
-                                data = None
+                    data = self._widget_api_call(
+                        "0004", meebook_url, meebook_headers,
+                        auth_header="authorization",
+                    )
 
                     if not isinstance(data, list):
                         if isinstance(data, dict) and "exceptionMessage" in data:
