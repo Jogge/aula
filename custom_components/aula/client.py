@@ -1058,8 +1058,10 @@ class Client:
                         # _LOGGER.debug("Meebook ugeplan raw response from week "+week+": "+str(response.text))
 
                     if isinstance(data, dict) and "message" in data and "expired" in str(data["message"]).lower():
-                        _LOGGER.debug("Meebook token expired, invalidating cached token and retrying...")
+                        _LOGGER.debug("Meebook token expired, resetting session and retrying...")
                         self.tokens.pop("0004", None)
+                        self._session = None
+                        self.login()
                         token = self.get_token("0004")
                         if token:
                             headers["authorization"] = token
